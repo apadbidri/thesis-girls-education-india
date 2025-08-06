@@ -1,0 +1,217 @@
+---
+title: "working script new"
+author: '43182'
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup}
+library(haven)      # to read Stata files
+library(dplyr)      # for data wrangling
+library(skimr)      # for quick dataset summaries
+
+demographic_info <- read_dta("inchildlevel8yrold.dta") %>%
+  mutate(childid_clean = sub("^IN", "", as.character(childid)))
+
+r1_roster <- read_dta("r1hhroster.dta") %>%
+  mutate(childid_clean = sub("^IN", "", as.character(childid)))
+
+cog_df <- read_dta("IN_R4_OCCOG_OlderChild.dta") %>%
+  mutate(CHILDCODE = as.character(CHILDCODE))
+
+roster_df  <- read_dta("IN_R4_OCHH_HouseholdRosterR4.dta") %>%
+  mutate(CHILDCODE = as.character(CHILDCODE))
+
+r4_child   <- read_dta("IN_R4_OCCH_OlderChild.dta") %>%
+  mutate(CHILDCODE = as.character(CHILDCODE))
+
+siblings_df <- roster_df %>%
+  group_by(CHILDCODE) %>%
+  summarise(
+    n_brothers = sum(MEMSEXR4 == 1 & RELATER4 %in% c(7,8,9,10,11,12), na.rm = TRUE),
+    n_sisters  = sum(MEMSEXR4 == 2 & RELATER4 %in% c(7,8,9,10,11,12), na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    n_brothers = ifelse(is.na(n_brothers), 0, n_brothers),
+    n_sisters  = ifelse(is.na(n_sisters), 0, n_sisters),
+    n_siblings = n_brothers + n_sisters,
+    has_brother = ifelse(n_brothers >= 1, 1, 0)
+  )
+
+merged_df <- demographic_info %>%
+  left_join(cog_df,    by = c("childid_clean" = "CHILDCODE")) %>%
+  left_join(r4_child,  by = c("childid_clean" = "CHILDCODE")) %>%
+  left_join(siblings_df, by = c("childid_clean" = "CHILDCODE"))
+
+merged_df <- merged_df %>%
+  mutate(birth_order = order + 1)
+
+
+# Filter for relate == 1 (likely household head) and select only childid_clean and yrschool
+r1_roster_filtered <- r1_roster %>%
+  filter(relate == 1) %>%
+  select(childid_clean, yrschool)
+
+# Merge yrschool (for relate == 1) into merged_df
+merged_df <- merged_df %>%
+  left_join(r1_roster_filtered, by = "childid_clean") 
+
+girls_df <- merged_df %>% filter(sex == 2)
+boys_df  <- merged_df %>% filter(sex == 1)
+
+```
+
+```{r descriptives}
+# Create brother-status label
+girls_df <- girls_df %>%
+  mutate(brother_status = ifelse(has_brother == 1, "Has Brother", "No Brother"))
+
+
+
+# Count 
+girls_df %>%
+  group_by(brother_status) %>%
+  summarise(count = n())
+
+girls_df$wi
+
+# Compute group means & SDs
+descriptives <- girls_df %>%
+  group_by(brother_status) %>%
+  summarise(
+    hhsize_mean = mean(hhsize, na.rm = TRUE),
+    hhsize_sd = sd(hhsize, na.rm = TRUE),
+    wealth_mean = mean(wi, na.rm = TRUE),
+    wealth_sd = sd(wi, na.rm = TRUE),
+    service_mean = mean(sv, na.rm = TRUE),
+    service_sd = sd(sv, na.rm = TRUE),
+    enrollment_rate = mean(ENRSCHR4 == 1, na.rm = TRUE) * 100,
+    grade_mean = mean(HGHQULR4, na.rm = TRUE),
+    grade_sd = sd(HGHQULR4, na.rm = TRUE),
+    maths_mean = mean(maths_perco, na.rm = TRUE),
+    maths_sd = sd(maths_perco, na.rm = TRUE),
+    english_mean = mean(engl_perco, na.rm = TRUE),
+    english_sd = sd(engl_perco, na.rm = TRUE),
+    language_mean = mean(lang_perco, na.rm = TRUE),
+    language_sd = sd(lang_perco, na.rm = TRUE),
+    ethnic_mean = mean(chldeth, na.rm = TRUE),
+    ethnic_sd = sd(chldeth, na.rm = TRUE)
+  )
+
+print(descriptives)
+
+firstborn_counts <- merged_df %>%
+  filter(birth_order == 1) %>%       # keep only first-borns
+  group_by(sex) %>%                  # group by sex
+  summarise(count = n(), .groups = "drop")  # count them
+
+
+firstborn_counts
+
+```
+
+```{r girls_OLS_models}
+# English scores
+model_english <- lm(engl_raw ~ has_brother + wi + sv + hhsize + yrschool + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
+
+# Maths scores
+model_maths <- lm(maths_raw ~ has_brother + wi + sv + hhsize + yrschool + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
+
+# Language scores
+model_lang <- lm(lang_raw ~ has_brother + wi + sv + hhsize + yrschool + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
+
+# Grade completed
+model_grade <- lm(HGHQULR4 ~ has_brother + wi + sv + hhsize + yrschool + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
+
+
+summary(model_english)
+summary(model_maths)
+summary(model_lang)
+summary(model_grade)
+
+```
+
+```{r balance_tests}
+balance_check <- function(df, group_var, vars) {
+  group <- as.factor(df[[group_var]])   # <-- force factor
+  
+  results <- lapply(vars, function(var) {
+    x <- df[[var]]
+    if (length(levels(group)) < 2) {
+      return(data.frame(
+        Variable = var,
+        Mean_Group0 = NA,
+        Mean_Group1 = NA,
+        p_value = NA
+      ))
+    }
+    if (is.numeric(x)) {
+      # t-test for continuous
+      test <- t.test(x ~ group)
+      data.frame(
+        Variable = var,
+        Mean_Group0 = mean(x[group == levels(group)[1]], na.rm = TRUE),
+        Mean_Group1 = mean(x[group == levels(group)[2]], na.rm = TRUE),
+        p_value = test$p.value
+      )
+    } else {
+      # chi-square for categorical
+      tab <- table(x, group)
+      if (min(dim(tab)) < 2) {
+        return(data.frame(
+          Variable = var,
+          Mean_Group0 = NA,
+          Mean_Group1 = NA,
+          p_value = NA
+        ))
+      }
+      test <- chisq.test(tab)
+      data.frame(
+        Variable = var,
+        Mean_Group0 = NA,
+        Mean_Group1 = NA,
+        p_value = test$p.value
+      )
+    }
+  })
+  
+  do.call(rbind, results)
+}
+
+
+# --- Select variables to check ---
+balance_vars <- c("wi", "sv", "hhsize", "yrschool", "typesite", "chldeth")
+
+# --- Run for Girls ---
+girls_balance <- balance_check(girls_df, "has_brother", balance_vars)
+
+girls_balance <- girls_balance %>%
+  mutate(p_value = round(p_value, 3))
+print("Balance check for GIRLS:")
+print(girls_balance)
+```
+
+```{r boys_df_tests}
+boys_df <- boys_df %>%
+  mutate(brother_status = ifelse(has_brother == 1, "Has Brother", "No Brother"))
+
+# English scores
+boy_model_english <- lm(engl_raw ~ has_brother + wi + sv + hhsize + yrschool + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = boys_df)
+
+# Maths scores
+boy_model_maths <- lm(maths_raw ~ has_brother + wi + sv + hhsize + yrschool + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = boys_df)
+
+# Language scores
+boy_model_lang <- lm(lang_raw ~ has_brother + wi + sv + hhsize + yrschool + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = boys_df)
+
+# Grade completed
+boy_model_grade <- lm(HGHQULR4 ~ has_brother + wi + sv + hhsize + yrschool + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = boys_df)
+
+
+summary(boy_model_english)
+summary(boy_model_maths)
+summary(boy_model_lang)
+summary(boy_model_grade)
+
+```
