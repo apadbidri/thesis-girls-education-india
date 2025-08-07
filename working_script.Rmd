@@ -69,6 +69,44 @@ boys_df  <- merged_df %>% filter(sex == 1)
 summary(girls_df$has_brother)
 ```
 
+```{r data_cleaning}
+
+# Overview of missingness
+# List of variables
+vars <- c("has_brother", "wi", "sv", "hhsize", "mother_edu", "father_edu", 
+          "chldeth", "typesite", "birth_order", 
+          "engl_perco", "lang_perco", "maths_perco", "HGHQULR4")
+
+# Count and percentage of missing values
+missing_summary <- data.frame(
+  Variable = vars,
+  Missing_Count = sapply(girls_df[vars], function(x) sum(is.na(x))),
+  Missing_Percent = sapply(girls_df[vars], function(x) mean(is.na(x)) * 100)
+)
+
+# View the summary
+print(missing_summary)
+
+
+# Drop rows with less than 10% missingness
+girls_df_cleaned <- girls_df %>%
+  filter(!is.na(has_brother), !is.na(mother_edu), !is.na(father_edu))
+
+
+# Example: Filter for non-missing outcome in math_perco model
+math_model_df <- girls_df_cleaned %>%
+  filter(!is.na(maths_perco))
+
+eng_model_df <- girls_df_cleaned %>%
+  filter(!is.na(engl_perco))
+
+lang_model_df <- girls_df_cleaned %>%
+  filter(!is.na(lang_perco))
+
+HGHQULR4_model_df <- girls_df_cleaned %>%
+  filter(!is.na(HGHQULR4))
+```
+
 ```{r descriptives}
 
 library(flextable)
@@ -133,78 +171,23 @@ flextable::save_as_docx(
 
 ```
 
-```{r data_cleaning}
-# 1. Impute mean for mother_edu
-girls_df$mother_edu[is.na(girls_df$mother_edu)] <- mean(girls_df$mother_edu, na.rm = TRUE)
-
-# 2. Impute mean for father_edu
-girls_df$father_edu[is.na(girls_df$father_edu)] <- mean(girls_df$father_edu, na.rm = TRUE)
-
-# 3. Remove rows where has_brothers is NA
-girls_df <- girls_df[!is.na(girls_df$has_brother), ]
-
-mean(is.na(girls_df$HGHQULR4))  # e.g., 0.48 = 48% missing
-
-library(mice)
-
-# Select variables related to the missingness and the outcome itself
-impute_vars <- girls_df[, c("HGHQULR4", "mother_edu", "father_edu", "wi", "hhsize", 
-                            "typesite", "birth_order", "has_brother", "sv")]
-
-# Run multiple imputation (m = number of imputations)
-imputed_data <- mice(impute_vars, m = 5, method = "pmm", seed = 123)
-
-# Check imputation summary
-summary(imputed_data)
-
-# Get the completed dataset (use the first imputed version, or pool later)
-completed_df <- complete(imputed_data, 1)
-
-# Replace in original girls_df
-girls_df$HGHQULR4 <- completed_df$HGHQULR4
-
-library(haven)
-
-# Convert to ordered factor using the Stata labels
-girls_df$HGHQULR4 <- factor(as_factor(girls_df$HGHQULR4),
-                            ordered = TRUE)
-library(mice)
-
-impute_vars <- girls_df[, c("HGHQULR4", "mother_edu", "father_edu", 
-                            "wi", "hhsize", "typesite", 
-                            "birth_order", "has_brother", "sv")]
-
-imputed_data <- mice(impute_vars, m = 5, method = "pmm", seed = 123)
-
-completed_df <- complete(imputed_data, 1)
-girls_df$HGHQULR4 <- completed_df$HGHQULR4
-
-sum(is.na(girls_df$HGHQULR4))
-```
-
 ```{r girls_OLS_models}
 
 # English scores
-model_english <- lm(engl_perco ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
+model_english <- lm(engl_perco ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = eng_model_df)
+summary(model_english)
 
 # Maths scores
-model_maths <- lm(maths_perco ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
+model_maths <- lm(maths_perco ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = math_model_df)
+summary(model_maths)
 
 # Language scores
-model_lang <- lm(lang_perco ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
-
-# Convert ordered factor to numeric codes
-girls_df$HGHQULR4 <- as.numeric(girls_df$HGHQULR4) - 1
-
+model_lang <- lm(lang_perco ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = lang_model_df)
+summary(model_lang)
 
 # Grade completed
-model_grade <- lm(HGHQULR4 ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
+model_grade <- lm(HGHQULR4 ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = HGHQULR4_model_df)
 summary(model_grade)
-
-
-summary(model_english)
-summary(model_maths)
-summary(model_lang)
 
 ```
 
@@ -338,6 +321,7 @@ summary(sis_model_lang)
 summary(sis_model_grade)
 
 ```
+
 
 
 
