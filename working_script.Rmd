@@ -133,24 +133,78 @@ flextable::save_as_docx(
 
 ```
 
+```{r data_cleaning}
+# 1. Impute mean for mother_edu
+girls_df$mother_edu[is.na(girls_df$mother_edu)] <- mean(girls_df$mother_edu, na.rm = TRUE)
+
+# 2. Impute mean for father_edu
+girls_df$father_edu[is.na(girls_df$father_edu)] <- mean(girls_df$father_edu, na.rm = TRUE)
+
+# 3. Remove rows where has_brothers is NA
+girls_df <- girls_df[!is.na(girls_df$has_brother), ]
+
+mean(is.na(girls_df$HGHQULR4))  # e.g., 0.48 = 48% missing
+
+library(mice)
+
+# Select variables related to the missingness and the outcome itself
+impute_vars <- girls_df[, c("HGHQULR4", "mother_edu", "father_edu", "wi", "hhsize", 
+                            "typesite", "birth_order", "has_brother", "sv")]
+
+# Run multiple imputation (m = number of imputations)
+imputed_data <- mice(impute_vars, m = 5, method = "pmm", seed = 123)
+
+# Check imputation summary
+summary(imputed_data)
+
+# Get the completed dataset (use the first imputed version, or pool later)
+completed_df <- complete(imputed_data, 1)
+
+# Replace in original girls_df
+girls_df$HGHQULR4 <- completed_df$HGHQULR4
+
+library(haven)
+
+# Convert to ordered factor using the Stata labels
+girls_df$HGHQULR4 <- factor(as_factor(girls_df$HGHQULR4),
+                            ordered = TRUE)
+library(mice)
+
+impute_vars <- girls_df[, c("HGHQULR4", "mother_edu", "father_edu", 
+                            "wi", "hhsize", "typesite", 
+                            "birth_order", "has_brother", "sv")]
+
+imputed_data <- mice(impute_vars, m = 5, method = "pmm", seed = 123)
+
+completed_df <- complete(imputed_data, 1)
+girls_df$HGHQULR4 <- completed_df$HGHQULR4
+
+sum(is.na(girls_df$HGHQULR4))
+```
+
 ```{r girls_OLS_models}
+
 # English scores
-model_english <- lm(engl_raw ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
+model_english <- lm(engl_perco ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
 
 # Maths scores
-model_maths <- lm(maths_raw ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
+model_maths <- lm(maths_perco ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
 
 # Language scores
-model_lang <- lm(lang_raw ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
+model_lang <- lm(lang_perco ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
+
+# Convert ordered factor to numeric codes
+girls_df$HGHQULR4 <- as.numeric(girls_df$HGHQULR4) - 1
+
 
 # Grade completed
 model_grade <- lm(HGHQULR4 ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = girls_df)
+summary(model_grade)
 
 
 summary(model_english)
 summary(model_maths)
 summary(model_lang)
-summary(model_grade)
 
 ```
 
