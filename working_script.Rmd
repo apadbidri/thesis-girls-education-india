@@ -6,67 +6,67 @@ output: html_document
 ---
 
 ```{r setup}
-library(haven) # to read stata files 
-library(dplyr)  
+library(haven)
+library(dplyr)
 
+#--- Load and clean demographic data
 demographic_info <- read_dta("inchildlevel8yrold.dta") %>%
   mutate(childid_clean = sub("^IN", "", as.character(childid)))
 
 r1_roster <- read_dta("r1hhroster.dta") %>%
   mutate(childid_clean = sub("^IN", "", as.character(childid)))
 
-cog_df <- read_dta("IN_R4_OCCOG_OlderChild.dta") %>%
+#--- Load R4 datasets and clean ID
+cog_df   <- read_dta("IN_R4_OCCOG_OlderChild.dta") %>%
   mutate(CHILDCODE = as.character(CHILDCODE))
 
-roster_df  <- read_dta("IN_R4_OCHH_HouseholdRosterR4.dta") %>%
+roster_df <- read_dta("IN_R4_OCHH_HouseholdRosterR4.dta") %>%
   mutate(CHILDCODE = as.character(CHILDCODE))
 
-r4_child   <- read_dta("IN_R4_OCCH_OlderChild.dta") %>%
+r4_child <- read_dta("IN_R4_OCCH_OlderChild.dta") %>%
   mutate(CHILDCODE = as.character(CHILDCODE))
 
-
+#--- Merge child-level data (left joins keep original sample)
 merged_df <- demographic_info %>%
-  left_join(cog_df,    by = c("childid_clean" = "CHILDCODE")) %>%
-  left_join(r4_child,  by = c("childid_clean" = "CHILDCODE")) 
+  left_join(cog_df,   by = c("childid_clean" = "CHILDCODE")) %>%
+  left_join(r4_child, by = c("childid_clean" = "CHILDCODE"))
 
+#--- Add birth order (order is birth rank - 1)
 merged_df <- merged_df %>%
   mutate(birth_order = order + 1)
 
-# Mother's education: relate == 1 and sex == 2
+#--- Extract mother's and father's education
 mother_edu <- r1_roster %>%
   filter(relate == 1, sex == 2) %>%
   select(childid_clean, mother_edu = yrschool)
 
-# Father's education: relate == 1 and sex == 1
 father_edu <- r1_roster %>%
   filter(relate == 1, sex == 1) %>%
   select(childid_clean, father_edu = yrschool)
 
-# Merge both into merged_df
+#--- Merge parental education
 merged_df <- merged_df %>%
   left_join(mother_edu, by = "childid_clean") %>%
   left_join(father_edu, by = "childid_clean")
 
-# Create sibling status variables directly in merged_df
+#--- Create sibling variables
 merged_df <- merged_df %>%
   mutate(
-    # Total siblings
-    n_siblings = brothers + sisters,
-    
-    # Binary indicators
-    has_brother   = ifelse(brothers >= 1, 1, 0),
-    has_sister   = ifelse(sisters >= 1, 1, 0),
-    has_siblings  = ifelse(n_siblings >= 1, 1, 0),
-    
-    # Label for descriptive purposes
+    n_siblings     = brothers + sisters,
+    has_brother    = ifelse(brothers >= 1, 1, 0),
+    has_sister     = ifelse(sisters >= 1, 1, 0),
+    has_siblings   = ifelse(n_siblings >= 1, 1, 0),
     brother_status = ifelse(has_brother == 1, "Has Brother", "No Brother")
   )
 
-
+#--- Split by sex
 girls_df <- merged_df %>% filter(sex == 2)
 boys_df  <- merged_df %>% filter(sex == 1)
 
+#--- Quick check
 summary(girls_df$has_brother)
+
+
 ```
 
 ```{r data_cleaning}
@@ -186,8 +186,34 @@ model_lang <- lm(lang_perco ~ has_brother + wi + sv + hhsize + mother_edu + fath
 summary(model_lang)
 
 # Grade completed
-model_grade <- lm(HGHQULR4 ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = HGHQULR4_model_df)
+model_grade <- lm(HGHQULR4 ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + n_siblings + birth_order * has_brother + wi * has_brother, data = HGHQULR4_model_df)
 summary(model_grade)
+
+# Height (placebo tests)
+model_grade <- lm(chheght ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = HGHQULR4_model_df)
+summary(model_grade)
+
+
+HGHQULR4_model_df <- HGHQULR4_model_df %>%
+  filter(has_brother == 1) %>%  # create binary indicator
+  filter(brothers < 4)                                   # drop rows with 3+ brothers
+
+nbros_model_grade <- lm(HGHQULR4 ~ brothers + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * brothers + wi * brothers, data = HGHQULR4_model_df)
+summary(nbros_model_grade)
+
+HGHQULR4_model_df <- HGHQULR4_model_df %>%
+  filter(has_brother == 1) %>% 
+  filter(brothers < 3)                                   # drop rows with 3+ brothers
+
+nbros_model_grade <- lm(HGHQULR4 ~ brothers + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + n_siblings + birth_order * brothers + wi * brothers, data = HGHQULR4_model_df)
+summary(nbros_model_grade)
+
+
+summary(HGHQULR4_model_df$brothers)
+table(HGHQULR4_model_df$brothers)
+
+
+
 
 ```
 
@@ -243,7 +269,7 @@ balance_check <- function(df, group_var, vars) {
 balance_vars <- c("birth_order", "wi", "sv", "hhsize", "mother_edu", "father_edu", "typesite", "chldeth")
 
 # --- Run for Girls ---
-girls_balance <- balance_check(girls_df, "has_brother", balance_vars)
+girls_balance <- balance_check(girls_df_cleaned, "has_brother", balance_vars)
 
 girls_balance <- girls_balance %>%
   mutate(p_value = round(p_value, 3))
@@ -277,51 +303,215 @@ merged_df$WHICHSEX
 ```
 
 ```{r boys_df_tests}
-boys_df <- boys_df %>%
-  mutate(brother_status = ifelse(has_brother == 1, "Has Brother", "No Brother"))
+
 
 # English scores
-boy_model_english <- lm(engl_raw ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = boys_df)
+boy_model_english <- lm(engl_perco ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = boy_eng_model_df)
 
 # Maths scores
-boy_model_maths <- lm(maths_raw ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = boys_df)
+boy_model_maths <- lm(maths_perco ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = boy_math_model_df)
 
 # Language scores
-boy_model_lang <- lm(lang_raw ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = boys_df)
+boy_model_lang <- lm(lang_perco ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = boy_lang_model_df)
 
 # Grade completed
-boy_model_grade <- lm(HGHQULR4 ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = boys_df)
-
+boy_model_grade <- lm(HGHQULR4 ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother, data = boy_HGHQULR4_model_df)
 
 summary(boy_model_english)
 summary(boy_model_maths)
 summary(boy_model_lang)
 summary(boy_model_grade)
+```
 
+```{r boys_cleaning}
+# Overview of missingness
+# List of variables
+
+boys_df <- boys_df %>%
+  mutate(brother_status = ifelse(has_brother == 1, "Has Brother", "No Brother"))
+  
+vars <- c("has_brother", "wi", "sv", "hhsize", "mother_edu", "father_edu", 
+          "chldeth", "typesite", "birth_order", 
+          "engl_perco", "lang_perco", "maths_perco", "HGHQULR4")
+
+# Count and percentage of missing values
+missing_summary <- data.frame(
+  Variable = vars,
+  Missing_Count = sapply(boys_df[vars], function(x) sum(is.na(x))),
+  Missing_Percent = sapply(boys_df[vars], function(x) mean(is.na(x)) * 100)
+)
+
+# View the summary
+print(missing_summary)
+
+# Drop rows with less than 10% missingness
+boys_df_cleaned <- boys_df %>%
+  filter(!is.na(has_brother), !is.na(mother_edu), !is.na(father_edu))
+
+
+# Example: Filter for non-missing outcome in math_perco model
+boy_math_model_df <- boys_df_cleaned %>%
+  filter(!is.na(maths_perco))
+
+boy_eng_model_df <-boys_df_cleaned %>%
+  filter(!is.na(engl_perco))
+
+boy_lang_model_df <- boys_df_cleaned %>%
+  filter(!is.na(lang_perco))
+
+boy_HGHQULR4_model_df <- boys_df_cleaned %>%
+  filter(!is.na(HGHQULR4))
 ```
 
 ```{r sisters_test}
-# Grade completed
+library(dplyr)
+
+
+girls_df_cleaned <- girls_df_cleaned %>%
+  mutate(has_sister = ifelse(has_sister == 1, 1, 0))
+
+
+
+
+# --- 2) Missingness summary for variables used --------------------------------
+vars_girls <- c("has_sister", "wi", "sv", "hhsize", "mother_edu", "father_edu",
+                "chldeth", "typesite", "birth_order",
+                "engl_perco", "lang_perco", "maths_perco", "HGHQULR4")
+
+missing_summary_girls <- data.frame(
+  Variable = vars_girls,
+  Missing_Count = sapply(girls_df_cleaned[vars_girls], function(x) sum(is.na(x))),
+  Missing_Percent = sapply(girls_df_cleaned[vars_girls], function(x) mean(is.na(x)) * 100)
+)
+
+print(missing_summary_girls)
+
+
+# --- 3) Basic cleaning (drop key NAs you can’t impute easily) -----------------
+girls_df_cleaned2 <- girls_df_cleaned %>%
+  filter(!is.na(has_sister),
+         !is.na(mother_edu),
+         !is.na(father_edu))
+
+# Outcome-specific model data frames
+girls_math_model_df <- girls_df_cleaned2 %>% filter(!is.na(maths_perco))
+girls_eng_model_df  <- girls_df_cleaned2 %>% filter(!is.na(engl_perco))
+girls_lang_model_df <- girls_df_cleaned2 %>% filter(!is.na(lang_perco))
+girls_HGHQULR4_model_df <- girls_df_cleaned2 %>% filter(!is.na(HGHQULR4))
+
+
+# --- 4) Run OLS models with has_sister ----------------------------------------
+
 # English scores
-sis_model_english <- lm(engl_raw ~ has_sister + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_sister + wi * has_sister, data = girls_df)
+girls_model_english <- lm(
+  engl_perco ~ has_sister + wi + sv + hhsize + mother_edu + father_edu +
+    chldeth + typesite + birth_order +
+    birth_order * has_sister + wi * has_sister,
+  data = girls_eng_model_df
+)
 
 # Maths scores
-sis_model_maths <- lm(maths_raw ~ has_sister + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_sister + wi * has_sister, data = girls_df)
+girls_model_maths <- lm(
+  maths_perco ~ has_sister + wi + sv + hhsize + mother_edu + father_edu +
+    chldeth + typesite + birth_order +
+    birth_order * has_sister + wi * has_sister,
+  data = girls_math_model_df
+)
 
 # Language scores
-sis_model_lang <- lm(lang_raw ~ has_sister + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_sister + wi * has_sister, data = girls_df)
+girls_model_lang <- lm(
+  lang_perco ~ has_sister + wi + sv + hhsize + mother_edu + father_edu +
+    chldeth + typesite + birth_order +
+    birth_order * has_sister + wi * has_sister,
+  data = girls_lang_model_df
+)
 
-# Grade completed
-sis_model_grade <- lm(HGHQULR4 ~ has_sister + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_sister + wi * has_sister, data = girls_df)
+# Educational attainment (HGHQULR4)
+girls_model_grade <- lm(
+  HGHQULR4 ~ has_sister + wi + sv + hhsize + mother_edu + father_edu +
+    chldeth + typesite + birth_order +
+    birth_order * has_sister + wi * has_sister,
+  data = girls_HGHQULR4_model_df
+)
+
+summary(girls_model_english)
+summary(girls_model_maths)
+summary(girls_model_lang)
+summary(girls_model_grade)
 
 
-summary(sis_model_english)
-summary(sis_model_maths)
-summary(sis_model_lang)
-summary(sis_model_grade)
+girls_HGHQULR4_model_df <- girls_HGHQULR4_model_df %>%
+  filter(has_sister == 1) %>%  # create binary indicator
+  filter(sisters < 3)                                   # drop rows with 3+ brothers
+
+nsis_model_grade <- lm(HGHQULR4 ~ sisters + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * sisters + wi * sisters, data = girls_HGHQULR4_model_df)
+summary(nsis_model_grade)
+
+
+summary(girls_HGHQULR4_model_df$sisters)
+table(girls_HGHQULR4_model_df$sisters)
 
 ```
 
+```{r ordered_logit}
+library(MASS)      # for polr()
+library(dplyr)     # optional, for data wrangling
+
+HGHQULR4_model_df <- HGHQULR4_model_df %>%
+  mutate(HGHQULR4 = factor(HGHQULR4, 
+                           ordered = TRUE,
+                           levels = sort(unique(HGHQULR4))))
+
+ordered_model <- polr(HGHQULR4 ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother,
+                      data = HGHQULR4_model_df, Hess = TRUE)
+
+summary(ordered_model)
+
+ctable <- coef(summary(ordered_model))
+p_values <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+(ctable <- cbind(ctable, "p value" = p_values))
 
 
+
+
+```
+
+```{r birth_order}
+# First-born girls
+first_girls <- girls_df_cleaned %>%
+  filter(birth_order == 1)
+
+# Later-born girls (birth order == 2)
+later_girls <- girls_df_cleaned %>%
+  filter(birth_order >= 2)
+
+# Full dataset with non-missing attainment
+HGHQULR4_model_df <- girls_df_cleaned %>%
+  filter(!is.na(HGHQULR4))
+
+# First-born girls with non-missing attainment
+HGHQULR4_first <- HGHQULR4_model_df %>%
+  filter(birth_order == 1)
+
+# Later-born girls with non-missing attainment
+HGHQULR4_later <- HGHQULR4_model_df %>%
+  filter(birth_order >= 2)
+
+# First-born model
+model_grade_first <- lm(HGHQULR4 ~ has_brother + wi + sv + hhsize +
+                        mother_edu + father_edu + chldeth + typesite +
+                        birth_order + birth_order * has_brother + wi * has_brother,
+                        data = HGHQULR4_first)
+summary(model_grade_first)
+
+# Later-born model
+model_grade_later <- lm(HGHQULR4 ~ has_brother + wi + sv + hhsize +
+                        mother_edu + father_edu + chldeth + typesite +
+                        birth_order + birth_order * has_brother + wi * has_brother,
+                        data = HGHQULR4_later)
+summary(model_grade_later)
+
+
+
+```
 
