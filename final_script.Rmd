@@ -1,0 +1,559 @@
+---
+title: "final_script"
+author: 'Alyssa Padbidri'
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup}
+library(haven)
+library(dplyr)
+
+demographic_info <- read_dta("inchildlevel8yrold.dta") %>%
+  mutate(childid_clean = sub("^IN", "", as.character(childid)))
+
+r1_roster <- read_dta("r1hhroster.dta") %>%
+  mutate(childid_clean = sub("^IN", "", as.character(childid)))
+
+cog_df   <- read_dta("IN_R4_OCCOG_OlderChild.dta") %>%
+  mutate(CHILDCODE = as.character(CHILDCODE))
+
+roster_df <- read_dta("IN_R4_OCHH_HouseholdRosterR4.dta") %>%
+  mutate(CHILDCODE = as.character(CHILDCODE))
+
+r4_child <- read_dta("IN_R4_OCCH_OlderChild.dta") %>%
+  mutate(CHILDCODE = as.character(CHILDCODE))
+
+merged_df <- demographic_info %>%
+  left_join(cog_df,   by = c("childid_clean" = "CHILDCODE")) %>%
+  left_join(r4_child, by = c("childid_clean" = "CHILDCODE"))
+
+merged_df <- merged_df %>%
+  mutate(birth_order = order + 1)
+
+mother_edu <- r1_roster %>%
+  filter(relate == 1, sex == 2) %>%
+  select(childid_clean, mother_edu = yrschool)
+
+father_edu <- r1_roster %>%
+  filter(relate == 1, sex == 1) %>%
+  select(childid_clean, father_edu = yrschool)
+
+merged_df <- merged_df %>%
+  left_join(mother_edu, by = "childid_clean") %>%
+  left_join(father_edu, by = "childid_clean")
+
+merged_df <- merged_df %>%
+  mutate(
+    n_siblings     = brothers + sisters,
+    has_brother    = ifelse(brothers >= 1, 1, 0),
+    has_sister     = ifelse(sisters >= 1, 1, 0),
+    has_siblings   = ifelse(n_siblings >= 1, 1, 0),
+    brother_status = ifelse(has_brother == 1, "Has Brother", "No Brother"),
+    sister_status  = ifelse(has_sister == 1, "Has Sister", "No Sister")
+  )
+
+girls_df <- merged_df %>% filter(sex == 2)
+boys_df  <- merged_df %>% filter(sex == 1)
+```
+
+```{r data_cleaning}
+
+# Overview of missingness
+vars <- c("has_brother", "wi", "sv", "hhsize", "mother_edu", "father_edu", 
+          "chldeth", "typesite", "birth_order", 
+          "engl_perco", "lang_perco", "maths_perco", "HGHQULR4")
+
+missing_summary <- data.frame(
+  Variable = vars,
+  Missing_Count = sapply(girls_df[vars], function(x) sum(is.na(x))),
+  Missing_Percent = sapply(girls_df[vars], function(x) mean(is.na(x)) * 100)
+)
+
+print(missing_summary)
+
+
+# Drop rows with less than 10% missingness
+girls_df_cleaned <- girls_df %>%
+  filter(!is.na(has_brother), !is.na(mother_edu), !is.na(father_edu))
+
+
+math_model_df <- girls_df_cleaned %>%
+  filter(!is.na(maths_perco))
+
+eng_model_df <- girls_df_cleaned %>%
+  filter(!is.na(engl_perco))
+
+lang_model_df <- girls_df_cleaned %>%
+  filter(!is.na(lang_perco))
+
+HGHQULR4_model_df <- girls_df_cleaned %>%
+  filter(!is.na(HGHQULR4))
+
+library(dplyr)
+library(ggplot2)
+
+score_vars <- c("engl_perco", "maths_perco", "lang_perco", "HGHQULR4")
+
+for (var in score_vars) {
+  p <- girls_df_cleaned %>%
+    filter(!is.na(.data[[var]])) %>%
+    mutate(birth_group = ifelse(birth_order == 1, "First-born", "Later-born")) %>%
+    ggplot(aes(x = birth_group, y = .data[[var]], fill = birth_group)) +
+    geom_boxplot(alpha = 0.6) +
+    labs(
+      title = paste("Distribution of", var, "by Birth Order (Girls)"),
+      x = "Birth Order Group",
+      y = var
+    ) +
+    theme_minimal()
+  
+  print(p)  # Now we explicitly print the plot object
+}
+
+library(dplyr)
+
+# continuous outcomes
+cont_scores <- c("engl_perco", "maths_perco", "lang_perco")
+
+for (var in cont_scores) {
+  df <- girls_df_cleaned %>%
+    filter(!is.na(.data[[var]]), !is.na(birth_order)) %>%
+    mutate(firstborn = birth_order == 1)
+
+  cat("\n---", var, "(first-born vs later-born) ---\n")
+  print(t.test(reformulate("firstborn", response = var), data = df))
+}
+
+# ordinal outcome -> Wilcoxon rank-sum (more appropriate than t-test)
+df_ord <- girls_df_cleaned %>%
+  filter(!is.na(HGHQULR4), !is.na(birth_order)) %>%
+  mutate(firstborn = birth_order == 1)
+
+cat("\n--- HGHQULR4 (Wilcoxon rank-sum: first-born vs later-born) ---\n")
+print(wilcox.test(HGHQULR4 ~ firstborn, data = df_ord, exact = FALSE))
+
+
+
+```
+
+```{r descriptives}
+
+# Table for descriptives
+labels <- c(
+  "Sample Size",
+  "Years of Schooling (Mean, SD)",
+  "Birth Order (Mean, SD)",
+  "Mother's Years of Schooling (Mean, SD)",
+  "Father's Years of Schooling (Mean, SD)",
+  "Household Size (Mean, SD)",
+  "Wealth Index (Mean, SD)",
+  "Number of Siblings (Mean, SD)",
+  "Number of Brothers (Mean, SD)",
+  "Rural Residents (%)",
+  "Urban Residents (%)"
+)
+
+# Raw values
+n_total <- nrow(girls_df_cleaned)
+n_rural <- sum(girls_df_cleaned$typesite == 2, na.rm = TRUE)
+n_urban <- sum(girls_df_cleaned$typesite == 1, na.rm = TRUE)
+
+vals_raw <- list(
+  n_total,
+  c(mean(girls_df_cleaned$HGHQULR4, na.rm = TRUE), sd(girls_df_cleaned$HGHQULR4, na.rm = TRUE)),
+  c(mean(girls_df_cleaned$birth_order, na.rm = TRUE), sd(girls_df_cleaned$birth_order, na.rm = TRUE)),
+  c(mean(girls_df_cleaned$mother_edu, na.rm = TRUE), sd(girls_df_cleaned$mother_edu, na.rm = TRUE)),
+  c(mean(girls_df_cleaned$father_edu, na.rm = TRUE), sd(girls_df_cleaned$father_edu, na.rm = TRUE)),
+  c(mean(girls_df_cleaned$hhsize, na.rm = TRUE), sd(girls_df_cleaned$hhsize, na.rm = TRUE)),
+  c(mean(girls_df_cleaned$wi, na.rm = TRUE), sd(girls_df_cleaned$wi, na.rm = TRUE)),
+  c(mean(girls_df_cleaned$n_siblings, na.rm = TRUE), sd(girls_df_cleaned$n_siblings, na.rm = TRUE)),
+  c(mean(girls_df_cleaned$brothers, na.rm = TRUE), sd(girls_df_cleaned$brothers, na.rm = TRUE)),
+  (n_rural / n_total) * 100,
+  (n_urban / n_total) * 100
+)
+
+# Which are counts vs. means/percentages
+is_count <- c(TRUE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE)
+
+# Format values
+format_value <- function(x, count = FALSE) {
+  if (is.na(x)[1]) return("NA")
+  if (count) {
+    formatC(x, format = "d") # integer
+  } else if (length(x) == 2) {
+    paste0(formatC(x[1], format = "f", digits = 2), ", ", formatC(x[2], format = "f", digits = 2))
+  } else {
+    paste0(formatC(x, format = "f", digits = 2), "%") # percentage
+  }
+}
+
+Value <- mapply(format_value, vals_raw, is_count, USE.NAMES = FALSE)
+
+# Create table
+table1 <- data.frame(
+  Variable = labels,
+  Value = Value,
+  stringsAsFactors = FALSE
+)
+
+# Print for check
+print(table1, row.names = FALSE)
+
+# -------- Export to Word --------
+library(flextable)
+library(officer)
+
+ft <- flextable(table1) |> 
+  autofit() |> 
+  align(align = "left", part = "all")
+
+doc <- read_docx()
+doc <- body_add_par(doc, "Table 1. Descriptive Statistics — Girls Sample", style = "heading 2")
+doc <- body_add_flextable(doc, ft)
+
+print(doc, target = "table1_descriptives.docx")
+
+library(dplyr)
+library(ggplot2)
+
+score_vars <- c("engl_perco", "maths_perco", "lang_perco", "HGHQULR4")
+
+for (var in score_vars) {
+  p <- girls_df_cleaned %>%
+    filter(!is.na(.data[[var]])) %>%
+    mutate(birth_group = ifelse(birth_order == 1, "First-born", "Later-born")) %>%
+    ggplot(aes(x = birth_group, y = .data[[var]], fill = birth_group)) +
+    geom_boxplot(alpha = 0.6) +
+    labs(
+      title = paste("Distribution of", var, "by Birth Order (Girls)"),
+      x = "Birth Order Group",
+      y = var
+    ) +
+    theme_minimal()
+  
+  print(p)  # Now we explicitly print the plot object
+}
+
+library(dplyr)
+
+# continuous outcomes
+cont_scores <- c("engl_perco", "maths_perco", "lang_perco")
+
+for (var in cont_scores) {
+  df <- girls_df_cleaned %>%
+    filter(!is.na(.data[[var]]), !is.na(birth_order)) %>%
+    mutate(firstborn = birth_order == 1)
+
+  cat("\n---", var, "(first-born vs later-born) ---\n")
+  print(t.test(reformulate("firstborn", response = var), data = df))
+}
+
+# ordinal outcome -> Wilcoxon rank-sum (more appropriate than t-test)
+df_ord <- girls_df_cleaned %>%
+  filter(!is.na(HGHQULR4), !is.na(birth_order)) %>%
+  mutate(firstborn = birth_order == 1)
+
+cat("\n--- HGHQULR4 (Wilcoxon rank-sum: first-born vs later-born) ---\n")
+print(wilcox.test(HGHQULR4 ~ firstborn, data = df_ord, exact = FALSE))
+
+
+
+```
+
+```{r lnp_first_girl}
+# Load required packages
+library(dplyr)
+library(sandwich)
+library(lmtest)
+library(modelsummary)
+
+# Prepare variables
+merged_df <- merged_df %>%
+  mutate(
+    is_girl = ifelse(sex == 2, 1, 0)            # 1 = girl, 0 = boy
+  )
+
+# Run Linear Probability Model (LPM)
+model_lpm <- lm(
+  is_girl ~ birth_order + chldeth + mother_edu + father_edu + wi + typesite,
+  data = merged_df
+)
+
+summary(model_lpm)
+
+merged_df$WHICHSEX
+
+```
+
+```{r balance_tests}
+balance_check <- function(df, group_var, vars) {
+  group <- as.factor(df[[group_var]])   # <-- force factor
+  
+  results <- lapply(vars, function(var) {
+    x <- df[[var]]
+    if (length(levels(group)) < 2) {
+      return(data.frame(
+        Variable = var,
+        Mean_Group0 = NA,
+        Mean_Group1 = NA,
+        p_value = NA
+      ))
+    }
+    if (is.numeric(x)) {
+      # t-test for continuous
+      test <- t.test(x ~ group)
+      data.frame(
+        Variable = var,
+        Mean_Group0 = mean(x[group == levels(group)[1]], na.rm = TRUE),
+        Mean_Group1 = mean(x[group == levels(group)[2]], na.rm = TRUE),
+        p_value = test$p.value
+      )
+    } else {
+      # chi-square for categorical
+      tab <- table(x, group)
+      if (min(dim(tab)) < 2) {
+        return(data.frame(
+          Variable = var,
+          Mean_Group0 = NA,
+          Mean_Group1 = NA,
+          p_value = NA
+        ))
+      }
+      test <- chisq.test(tab)
+      data.frame(
+        Variable = var,
+        Mean_Group0 = NA,
+        Mean_Group1 = NA,
+        p_value = test$p.value
+      )
+    }
+  })
+  
+  do.call(rbind, results)
+}
+
+
+# --- Select variables to check ---
+balance_vars <- c("birth_order", "wi", "sv", "hhsize", "mother_edu", "father_edu", "typesite", "chldeth")
+
+# --- Run for Girls ---
+girls_balance <- balance_check(girls_df_cleaned, "has_brother", balance_vars)
+
+girls_balance <- girls_balance %>%
+  mutate(p_value = round(p_value, 3))
+print("Balance check for GIRLS:")
+print(girls_balance)
+```
+
+```{r girls_OLS_models}
+library(dplyr)
+
+# Predictor sets
+predictors_hasbro <- "~ has_brother + wi + sv + hhsize + mother_edu + father_edu +
+                      chldeth + typesite + birth_order + n_siblings +
+                      birth_order * has_brother + wi * has_brother"
+
+predictors_bros <- "~ brothers + wi + sv + hhsize + mother_edu + father_edu +
+                    chldeth + typesite + birth_order + n_siblings +
+                    birth_order * brothers + wi * brothers"
+
+# Outcome-specific data frames (you already have these)
+outcome_dfs <- list(
+  engl_perco  = eng_model_df,
+  maths_perco = math_model_df,
+  lang_perco  = lang_model_df,
+  HGHQULR4    = HGHQULR4_model_df
+)
+
+# Function to run OLS and print results
+run_models <- function(data, outcomes, formula_suffix) {
+  for (outcome in outcomes) {
+    df <- data[[outcome]]  # outcome-specific df
+    if (!is.null(df) && nrow(df) > 0) {
+      f <- as.formula(paste(outcome, formula_suffix))
+      cat("\nOutcome:", outcome, "\n")
+      print(summary(lm(f, data = df)))
+    }
+  }
+}
+
+# --- 1. Original sample: has_brother
+run_models(outcome_dfs, names(outcome_dfs), predictors_hasbro)
+
+# --- 2. Original sample: brothers (<3 brothers)
+outcome_dfs_bros <- lapply(outcome_dfs, \(df) df %>% filter(brothers < 3))
+run_models(outcome_dfs_bros, names(outcome_dfs), predictors_bros)
+
+# --- 3. First-born girls: has_brother
+firstborn_dfs <- lapply(outcome_dfs, \(df) df %>% filter(birth_order == 1))
+run_models(firstborn_dfs, names(outcome_dfs), predictors_hasbro)
+
+# --- 4. First-born girls: brothers (<3 brothers)
+firstborn_bros_dfs <- lapply(outcome_dfs, \(df) df %>% filter(birth_order == 1, brothers < 3))
+run_models(firstborn_bros_dfs, names(outcome_dfs), predictors_bros)
+
+# --- 5. Later-born girls: has_brother
+laterborn_dfs <- lapply(outcome_dfs, \(df) df %>% filter(birth_order >= 2))
+run_models(laterborn_dfs, names(outcome_dfs), predictors_hasbro)
+
+# --- 6. Later-born girls: brothers (<3 brothers)
+laterborn_bros_dfs <- lapply(outcome_dfs, \(df) df %>% filter(birth_order >= 2, brothers < 3))
+run_models(laterborn_bros_dfs, names(outcome_dfs), predictors_bros)
+
+```
+
+```{r boys_df}
+# Overview of missingness
+# List of variables
+
+boys_df <- boys_df %>%
+  mutate(brother_status = ifelse(has_brother == 1, "Has Brother", "No Brother"))
+  
+vars <- c("has_brother", "wi", "sv", "hhsize", "mother_edu", "father_edu", 
+          "chldeth", "typesite", "birth_order", 
+          "engl_perco", "lang_perco", "maths_perco", "HGHQULR4")
+
+# Count and percentage of missing values
+missing_summary <- data.frame(
+  Variable = vars,
+  Missing_Count = sapply(boys_df[vars], function(x) sum(is.na(x))),
+  Missing_Percent = sapply(boys_df[vars], function(x) mean(is.na(x)) * 100)
+)
+
+# View the summary
+print(missing_summary)
+
+# Drop rows with less than 10% missingness
+boys_df_cleaned <- boys_df %>%
+  filter(!is.na(has_brother), !is.na(mother_edu), !is.na(father_edu))
+
+
+# Example: Filter for non-missing outcome in math_perco model
+boy_math_model_df <- boys_df_cleaned %>%
+  filter(!is.na(maths_perco))
+
+boy_eng_model_df <-boys_df_cleaned %>%
+  filter(!is.na(engl_perco))
+
+boy_lang_model_df <- boys_df_cleaned %>%
+  filter(!is.na(lang_perco))
+
+boy_HGHQULR4_model_df <- boys_df_cleaned %>%
+  filter(!is.na(HGHQULR4))
+
+# --- Outcome-specific data frames for boys
+boy_outcome_dfs <- list(
+  engl_perco  = boy_eng_model_df,
+  maths_perco = boy_math_model_df,
+  lang_perco  = boy_lang_model_df,
+  HGHQULR4    = boy_HGHQULR4_model_df
+)
+
+# --- 1. Original sample: has_brother
+run_models(boy_outcome_dfs, names(boy_outcome_dfs), predictors_hasbro)
+
+# --- 2. Original sample: brothers (<3 brothers)
+boy_outcome_dfs_bros <- lapply(boy_outcome_dfs, \(df) df %>% filter(brothers < 3))
+run_models(boy_outcome_dfs_bros, names(boy_outcome_dfs), predictors_bros)
+
+# --- 3. First-born boys: has_brother
+boy_firstborn_dfs <- lapply(boy_outcome_dfs, \(df) df %>% filter(birth_order == 1))
+run_models(boy_firstborn_dfs, names(boy_outcome_dfs), predictors_hasbro)
+
+# --- 4. First-born boys: brothers (<3 brothers)
+boy_firstborn_bros_dfs <- lapply(boy_outcome_dfs, \(df) df %>% filter(birth_order == 1, brothers < 3))
+run_models(boy_firstborn_bros_dfs, names(boy_outcome_dfs), predictors_bros)
+
+# --- 5. Later-born boys: has_brother
+boy_laterborn_dfs <- lapply(boy_outcome_dfs, \(df) df %>% filter(birth_order >= 2))
+run_models(boy_laterborn_dfs, names(boy_outcome_dfs), predictors_hasbro)
+
+# --- 6. Later-born boys: brothers (<3 brothers)
+boy_laterborn_bros_dfs <- lapply(boy_outcome_dfs, \(df) df %>% filter(birth_order >= 2, brothers < 3))
+run_models(boy_laterborn_bros_dfs, names(boy_outcome_dfs), predictors_bros)
+
+```
+
+```{r sisters_test}
+# --- Check missingness for has_sister instead of has_brother
+vars_sis <- c("has_sister", "wi", "sv", "hhsize", "mother_edu", "father_edu", 
+              "chldeth", "typesite", "birth_order", 
+              "engl_perco", "lang_perco", "maths_perco", "HGHQULR4")
+
+missing_summary_sis <- data.frame(
+  Variable = vars_sis,
+  Missing_Count = sapply(girls_df[vars_sis], function(x) sum(is.na(x))),
+  Missing_Percent = sapply(girls_df[vars_sis], function(x) mean(is.na(x)) * 100)
+)
+
+print(missing_summary_sis)
+
+# --- Clean dataset: drop rows with NA in has_sister and key vars
+girls_df_sis_cleaned <- girls_df %>%
+  filter(!is.na(has_sister), !is.na(mother_edu), !is.na(father_edu))
+
+# --- Outcome-specific dfs (listwise deletion per outcome)
+sis_math_model_df <- girls_df_sis_cleaned %>%
+  filter(!is.na(maths_perco))
+
+sis_eng_model_df <- girls_df_sis_cleaned %>%
+  filter(!is.na(engl_perco))
+
+sis_lang_model_df <- girls_df_sis_cleaned %>%
+  filter(!is.na(lang_perco))
+
+sis_HGHQULR4_model_df <- girls_df_sis_cleaned %>%
+  filter(!is.na(HGHQULR4))
+
+# --- Put them in a list
+sis_outcome_dfs <- list(
+  engl_perco  = sis_eng_model_df,
+  maths_perco = sis_math_model_df,
+  lang_perco  = sis_lang_model_df,
+  HGHQULR4    = sis_HGHQULR4_model_df
+)
+
+# --- Define predictor string for has_sister models
+predictors_hassis <- "~ has_sister + wi + sv + hhsize + mother_edu + father_edu +
+                      chldeth + typesite + birth_order +
+                      birth_order * has_sister + wi * has_sister"
+
+# --- Run the same subsets and models
+## 1. Original sample
+run_models(sis_outcome_dfs, names(sis_outcome_dfs), predictors_hassis)
+
+## 2. First-born girls
+sis_firstborn_dfs <- lapply(sis_outcome_dfs, \(df) df %>% filter(birth_order == 1))
+run_models(sis_firstborn_dfs, names(sis_outcome_dfs), predictors_hassis)
+
+## 3. Later-born girls
+sis_laterborn_dfs <- lapply(sis_outcome_dfs, \(df) df %>% filter(birth_order >= 2))
+run_models(sis_laterborn_dfs, names(sis_outcome_dfs), predictors_hassis)
+
+
+
+```
+
+```{r ordered_logit}
+library(MASS)      # for polr()
+library(dplyr)     # optional, for data wrangling
+
+HGHQULR4_model_df <- HGHQULR4_model_df %>%
+  mutate(HGHQULR4 = factor(HGHQULR4, 
+                           ordered = TRUE,
+                           levels = sort(unique(HGHQULR4))))
+
+ordered_model <- polr(HGHQULR4 ~ has_brother + wi + sv + hhsize + mother_edu + father_edu + chldeth + typesite + birth_order + birth_order * has_brother + wi * has_brother,
+                      data = HGHQULR4_model_df, Hess = TRUE)
+
+summary(ordered_model)
+
+ctable <- coef(summary(ordered_model))
+p_values <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+(ctable <- cbind(ctable, "p value" = p_values))
+
+
+
+
+```
