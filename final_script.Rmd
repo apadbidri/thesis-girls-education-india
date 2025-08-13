@@ -9,6 +9,10 @@ output: html_document
 library(haven)
 library(dplyr)
 
+# detach("package:MASS", unload = TRUE)
+
+select
+
 demographic_info <- read_dta("inchildlevel8yrold.dta") %>%
   mutate(childid_clean = sub("^IN", "", as.character(childid)))
 
@@ -138,8 +142,26 @@ print(wilcox.test(HGHQULR4 ~ firstborn, data = df_ord, exact = FALSE))
 ```
 
 ```{r descriptives}
+library(dplyr)
+library(flextable)
+library(officer)
 
-# Table for descriptives
+# Mapping from HGHQULR4 to approximate years of schooling
+years_map <- c(
+  "0" = 0,   # None
+  "1" = 5,   # Primary
+  "2" = 8,   # Upper primary
+  "3" = 10,  # Class 10
+  "4" = 12,  # Class 12
+  "5" = 10,  # ITI
+  "6" = 12,  # Diploma
+  "8" = NA   # Other (can't easily assign)
+)
+
+girls_df_cleaned <- girls_df_cleaned %>%
+  mutate(years_schooling_mapped = years_map[as.character(HGHQULR4)])
+
+# Labels
 labels <- c(
   "Sample Size",
   "Years of Schooling (Mean, SD)",
@@ -154,56 +176,53 @@ labels <- c(
   "Urban Residents (%)"
 )
 
-# Raw values
-n_total <- nrow(girls_df_cleaned)
-n_rural <- sum(girls_df_cleaned$typesite == 2, na.rm = TRUE)
-n_urban <- sum(girls_df_cleaned$typesite == 1, na.rm = TRUE)
-
-vals_raw <- list(
-  n_total,
-  c(mean(girls_df_cleaned$HGHQULR4, na.rm = TRUE), sd(girls_df_cleaned$HGHQULR4, na.rm = TRUE)),
-  c(mean(girls_df_cleaned$birth_order, na.rm = TRUE), sd(girls_df_cleaned$birth_order, na.rm = TRUE)),
-  c(mean(girls_df_cleaned$mother_edu, na.rm = TRUE), sd(girls_df_cleaned$mother_edu, na.rm = TRUE)),
-  c(mean(girls_df_cleaned$father_edu, na.rm = TRUE), sd(girls_df_cleaned$father_edu, na.rm = TRUE)),
-  c(mean(girls_df_cleaned$hhsize, na.rm = TRUE), sd(girls_df_cleaned$hhsize, na.rm = TRUE)),
-  c(mean(girls_df_cleaned$wi, na.rm = TRUE), sd(girls_df_cleaned$wi, na.rm = TRUE)),
-  c(mean(girls_df_cleaned$n_siblings, na.rm = TRUE), sd(girls_df_cleaned$n_siblings, na.rm = TRUE)),
-  c(mean(girls_df_cleaned$brothers, na.rm = TRUE), sd(girls_df_cleaned$brothers, na.rm = TRUE)),
-  (n_rural / n_total) * 100,
-  (n_urban / n_total) * 100
-)
-
-# Which are counts vs. means/percentages
-is_count <- c(TRUE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE)
-
-# Format values
-format_value <- function(x, count = FALSE) {
-  if (is.na(x)[1]) return("NA")
-  if (count) {
-    formatC(x, format = "d") # integer
-  } else if (length(x) == 2) {
-    paste0(formatC(x[1], format = "f", digits = 2), ", ", formatC(x[2], format = "f", digits = 2))
-  } else {
-    paste0(formatC(x, format = "f", digits = 2), "%") # percentage
-  }
+# Function to calculate mean(SD) or percentage
+calc_stats <- function(data) {
+  n_total <- nrow(data)
+  n_rural <- sum(data$typesite == 2, na.rm = TRUE)
+  n_urban <- sum(data$typesite == 1, na.rm = TRUE)
+  
+  vals <- list(
+    n_total,
+    c(mean(data$years_schooling_mapped, na.rm = TRUE), sd(data$years_schooling_mapped, na.rm = TRUE)),
+    c(mean(data$birth_order, na.rm = TRUE), sd(data$birth_order, na.rm = TRUE)),
+    c(mean(data$mother_edu, na.rm = TRUE), sd(data$mother_edu, na.rm = TRUE)),
+    c(mean(data$father_edu, na.rm = TRUE), sd(data$father_edu, na.rm = TRUE)),
+    c(mean(data$hhsize, na.rm = TRUE), sd(data$hhsize, na.rm = TRUE)),
+    c(mean(data$wi, na.rm = TRUE), sd(data$wi, na.rm = TRUE)),
+    c(mean(data$n_siblings, na.rm = TRUE), sd(data$n_siblings, na.rm = TRUE)),
+    c(mean(data$brothers, na.rm = TRUE), sd(data$brothers, na.rm = TRUE)),
+    (n_rural / n_total) * 100,
+    (n_urban / n_total) * 100
+  )
+  
+  # Formatting: mean (SD) for numeric, % for percentages, integer for counts
+  sapply(vals, function(x) {
+    if (length(x) == 1 && x > 1 && x == round(x)) {
+      as.character(x)  # count
+    } else if (length(x) == 2) {
+      paste0(formatC(x[1], format = "f", digits = 2), " (", formatC(x[2], format = "f", digits = 2), ")")
+    } else {
+      paste0(formatC(x, format = "f", digits = 1), "%")
+    }
+  })
 }
 
-Value <- mapply(format_value, vals_raw, is_count, USE.NAMES = FALSE)
+# Calculate for all three groups
+total_vals <- calc_stats(girls_df_cleaned)
+with_brother_vals <- calc_stats(filter(girls_df_cleaned, has_brother == 1))
+without_brother_vals <- calc_stats(filter(girls_df_cleaned, has_brother == 0))
 
 # Create table
 table1 <- data.frame(
   Variable = labels,
-  Value = Value,
+  Total = total_vals,
+  `With Brother` = with_brother_vals,
+  `Without Brother` = without_brother_vals,
   stringsAsFactors = FALSE
 )
 
-# Print for check
-print(table1, row.names = FALSE)
-
-# -------- Export to Word --------
-library(flextable)
-library(officer)
-
+# Export to Word
 ft <- flextable(table1) |> 
   autofit() |> 
   align(align = "left", part = "all")
@@ -211,67 +230,22 @@ ft <- flextable(table1) |>
 doc <- read_docx()
 doc <- body_add_par(doc, "Table 1. Descriptive Statistics — Girls Sample", style = "heading 2")
 doc <- body_add_flextable(doc, ft)
-
 print(doc, target = "table1_descriptives.docx")
-
-library(dplyr)
-library(ggplot2)
-
-score_vars <- c("engl_perco", "maths_perco", "lang_perco", "HGHQULR4")
-
-for (var in score_vars) {
-  p <- girls_df_cleaned %>%
-    filter(!is.na(.data[[var]])) %>%
-    mutate(birth_group = ifelse(birth_order == 1, "First-born", "Later-born")) %>%
-    ggplot(aes(x = birth_group, y = .data[[var]], fill = birth_group)) +
-    geom_boxplot(alpha = 0.6) +
-    labs(
-      title = paste("Distribution of", var, "by Birth Order (Girls)"),
-      x = "Birth Order Group",
-      y = var
-    ) +
-    theme_minimal()
-  
-  print(p)  # Now we explicitly print the plot object
-}
-
-library(dplyr)
-
-# continuous outcomes
-cont_scores <- c("engl_perco", "maths_perco", "lang_perco")
-
-for (var in cont_scores) {
-  df <- girls_df_cleaned %>%
-    filter(!is.na(.data[[var]]), !is.na(birth_order)) %>%
-    mutate(firstborn = birth_order == 1)
-
-  cat("\n---", var, "(first-born vs later-born) ---\n")
-  print(t.test(reformulate("firstborn", response = var), data = df))
-}
-
-# ordinal outcome -> Wilcoxon rank-sum (more appropriate than t-test)
-df_ord <- girls_df_cleaned %>%
-  filter(!is.na(HGHQULR4), !is.na(birth_order)) %>%
-  mutate(firstborn = birth_order == 1)
-
-cat("\n--- HGHQULR4 (Wilcoxon rank-sum: first-born vs later-born) ---\n")
-print(wilcox.test(HGHQULR4 ~ firstborn, data = df_ord, exact = FALSE))
-
-
 
 ```
 
 ```{r lnp_first_girl}
-# Load required packages
+# Load packages
 library(dplyr)
 library(sandwich)
 library(lmtest)
 library(modelsummary)
+library(flextable)
 
 # Prepare variables
 merged_df <- merged_df %>%
   mutate(
-    is_girl = ifelse(sex == 2, 1, 0)            # 1 = girl, 0 = boy
+    is_girl = ifelse(sex == 2, 1, 0) # 1 = girl, 0 = boy
   )
 
 # Run Linear Probability Model (LPM)
@@ -280,13 +254,38 @@ model_lpm <- lm(
   data = merged_df
 )
 
-summary(model_lpm)
+# Apply robust standard errors (HC3)
+robust_se <- sqrt(diag(vcovHC(model_lpm, type = "HC3")))
 
-merged_df$WHICHSEX
+# Create APA 7th style table
+modelsummary(
+  list("Linear Probability Model" = model_lpm),
+  statistic = "({std.error}){stars}", # SE in parentheses + stars
+  stars = c('*' = .05, '**' = .01, '***' = .001),
+  coef_map = c(
+    "birth_order" = "Birth Order",
+    "chldeth" = "Child Ethnicity",
+    "mother_edu" = "Mother's Education",
+    "father_edu" = "Father's Education",
+    "wi" = "Wealth Index",
+    "typesite" = "Site Type"
+  ),
+  gof_omit = 'Adj|AIC|BIC|Log.Lik',
+  output = "flextable",
+  vcov = vcovHC(model_lpm, type = "HC3")
+) %>%
+  flextable::fontsize(size = 11, part = "all") %>%      # APA font size
+  flextable::font(fontname = "Times New Roman", part = "all") %>% 
+  flextable::autofit() %>%
+  save_as_docx(path = "model_lpm_APA.docx")
 
 ```
 
 ```{r balance_tests}
+
+library(dplyr)
+library(flextable)
+
 balance_check <- function(df, group_var, vars) {
   group <- as.factor(df[[group_var]])   # <-- force factor
   
@@ -334,16 +333,41 @@ balance_check <- function(df, group_var, vars) {
 }
 
 
-# --- Select variables to check ---
+
+
+
+
+# --- Variables to check ---
 balance_vars <- c("birth_order", "wi", "sv", "hhsize", "mother_edu", "father_edu", "typesite", "chldeth")
 
 # --- Run for Girls ---
-girls_balance <- balance_check(girls_df_cleaned, "has_brother", balance_vars)
+girls_balance <- balance_check(girls_df_cleaned, "has_brother", balance_vars) %>%
+  mutate(
+    Mean_Group0 = round(Mean_Group0, 2),
+    Mean_Group1 = round(Mean_Group1, 2),
+    p_value = round(p_value, 3)
+  )
 
-girls_balance <- girls_balance %>%
-  mutate(p_value = round(p_value, 3))
-print("Balance check for GIRLS:")
-print(girls_balance)
+# --- Rename columns for APA style ---
+colnames(girls_balance) <- c(
+  "Variable",
+  "M (No Brother)",
+  "M (Has Brother)",
+  "p"
+)
+
+# --- Create APA-style flextable ---
+apa_table <- flextable(girls_balance) %>%
+  autofit() %>%
+  theme_booktabs() %>% # APA style: no vertical lines, minimal horizontal lines
+  align(align = "center", part = "all") %>%
+  bold(part = "header") %>%
+  set_table_properties(layout = "autofit", width = .8)
+
+# --- Save to Word document ---
+read_docx() %>%
+  body_add_flextable(apa_table) %>%
+  print(target = "balance_check_girls.docx")
 ```
 
 ```{r girls_OLS_models}
@@ -365,6 +389,140 @@ outcome_dfs <- list(
   lang_perco  = lang_model_df,
   HGHQULR4    = HGHQULR4_model_df
 )
+library(dplyr)
+library(modelsummary)
+library(flextable)
+library(officer)
+
+# -----------------------
+# Helper: run both specs for a given outcome and subsample
+# -----------------------
+run_two_specs <- function(df, outcome, predictors1, predictors2) {
+  m1 <- lm(as.formula(paste(outcome, predictors1)), data = df)
+  m2 <- lm(as.formula(paste(outcome, predictors2)), data = df %>% filter(brothers < 3))
+  list(m1, m2)
+}
+
+# -----------------------
+# Function to make table for ONE outcome
+# `coef_keep` = TRUE for main text (filtered vars), FALSE for appendix (all vars)
+# -----------------------
+make_outcome_table <- function(outcome, outcome_label, coef_keep = TRUE, portrait = TRUE) {
+  
+  # Full sample
+  full_mods <- run_two_specs(outcome_dfs[[outcome]], outcome, predictors_hasbro, predictors_bros)
+  
+  # First-born
+  first_mods <- run_two_specs(firstborn_dfs[[outcome]], outcome, predictors_hasbro, predictors_bros)
+  
+  # Later-born
+  later_mods <- run_two_specs(laterborn_dfs[[outcome]], outcome, predictors_hasbro, predictors_bros)
+  
+  # Combine into a single named list
+  all_mods <- list(
+    "Full sample: Has brother"     = full_mods[[1]],
+    "Full sample: Brothers < 3"    = full_mods[[2]],
+    "First-born: Has brother"      = first_mods[[1]],
+    "First-born: Brothers < 3"     = first_mods[[2]],
+    "Later-born: Has brother"      = later_mods[[1]],
+    "Later-born: Brothers < 3"     = later_mods[[2]]
+  )
+  
+  # Variable labels for clarity
+  var_labels <- c(
+    "has_brother" = "Has brother",
+    "brothers" = "Number of brothers",
+    "birth_order:has_brother" = "Birth order × Has brother",
+    "wi:has_brother" = "Wealth index × Has brother",
+    "birth_order:brothers" = "Birth order × Number of brothers",
+    "wi:brothers" = "Wealth index × Number of brothers"
+  )
+  
+  # Decide what to keep
+  if (coef_keep) {
+    keep_vars <- names(var_labels) # only treatment + interactions
+  } else {
+    keep_vars <- NULL # all variables
+  }
+  
+  ft <- msummary(
+    all_mods,
+    stars = c('*' = .1, '**' = .05, '***' = .01),
+    gof_omit = 'IC|Log|Adj|F',
+    coef_map = var_labels,
+    coef_omit = if (!coef_keep) NULL else paste0("^(?!", paste(keep_vars, collapse="|"), ").*$"),
+    output = "flextable"
+  ) |>
+    set_caption(paste0("OLS Regression Results — ", outcome_label))
+  
+  # Force portrait-friendly widths for main text
+  if (portrait) {
+    ft <- ft |>
+      width(width = 1.0) |> # ~1 inch per column
+      fontsize(size = 10, part = "all")
+  }
+  
+  return(ft)
+}
+
+# -----------------------
+# MAIN TEXT TABLES (portrait-friendly)
+# -----------------------
+tab_eng_main  <- make_outcome_table("engl_perco",  "English test score", TRUE, TRUE)
+tab_math_main <- make_outcome_table("maths_perco", "Mathematics test score", TRUE, TRUE)
+tab_lang_main <- make_outcome_table("lang_perco",  "Language test score", TRUE, TRUE)
+tab_edu_main  <- make_outcome_table("HGHQULR4",    "Highest educational attainment", TRUE, TRUE)
+
+# -----------------------
+# APPENDIX TABLES (landscape, full)
+# -----------------------
+tab_eng_app  <- make_outcome_table("engl_perco",  "English test score", FALSE, FALSE)
+tab_math_app <- make_outcome_table("maths_perco", "Mathematics test score", FALSE, FALSE)
+tab_lang_app <- make_outcome_table("lang_perco",  "Language test score", FALSE, FALSE)
+tab_edu_app  <- make_outcome_table("HGHQULR4",    "Highest educational attainment", FALSE, FALSE)
+
+# -----------------------
+# EXPORT TO WORD
+# -----------------------
+doc <- read_docx()
+
+# Main text section
+doc <- body_add_par(doc, "Main Text Tables (Portrait)", style = "heading 1")
+doc <- body_add_flextable(doc, tab_eng_main)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_math_main)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_lang_main)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_edu_main)
+
+# Appendix section — landscape
+doc <- body_add_par(doc, "Appendix Tables (Full Results, Landscape)", style = "heading 1")
+doc <- block_section(prop_section(
+  page_size = page_size(orient = "landscape"),
+  page_margins = page_margins(top = 1440, right = 1440, bottom = 1440, left = 1440) # 1 inch = 1440 twips
+))
+doc <- body_add_flextable(doc, tab_eng_app)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_math_app)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_lang_app)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_edu_app)
+
+print(doc, target = "OLS_results_main_portrait_appendix_landscape.docx")
+
+
+
+
+
+
+
+
+
+
+
+
 
 # Function to run OLS and print results
 run_models <- function(data, outcomes, formula_suffix) {
@@ -404,45 +562,25 @@ run_models(laterborn_bros_dfs, names(outcome_dfs), predictors_bros)
 ```
 
 ```{r boys_df}
-# Overview of missingness
-# List of variables
+library(dplyr)
+library(modelsummary)
+library(flextable)
+library(officer)
 
-boys_df <- boys_df %>%
-  mutate(brother_status = ifelse(has_brother == 1, "Has Brother", "No Brother"))
-  
-vars <- c("has_brother", "wi", "sv", "hhsize", "mother_edu", "father_edu", 
-          "chldeth", "typesite", "birth_order", 
-          "engl_perco", "lang_perco", "maths_perco", "HGHQULR4")
+# -----------------------
+# Predictor sets
+# -----------------------
+predictors_hasbro <- "~ has_brother + wi + sv + hhsize + mother_edu + father_edu +
+                      chldeth + typesite + birth_order + n_siblings +
+                      birth_order * has_brother + wi * has_brother"
 
-# Count and percentage of missing values
-missing_summary <- data.frame(
-  Variable = vars,
-  Missing_Count = sapply(boys_df[vars], function(x) sum(is.na(x))),
-  Missing_Percent = sapply(boys_df[vars], function(x) mean(is.na(x)) * 100)
-)
+predictors_bros <- "~ brothers + wi + sv + hhsize + mother_edu + father_edu +
+                    chldeth + typesite + birth_order + n_siblings +
+                    birth_order * brothers + wi * brothers"
 
-# View the summary
-print(missing_summary)
-
-# Drop rows with less than 10% missingness
-boys_df_cleaned <- boys_df %>%
-  filter(!is.na(has_brother), !is.na(mother_edu), !is.na(father_edu))
-
-
-# Example: Filter for non-missing outcome in math_perco model
-boy_math_model_df <- boys_df_cleaned %>%
-  filter(!is.na(maths_perco))
-
-boy_eng_model_df <-boys_df_cleaned %>%
-  filter(!is.na(engl_perco))
-
-boy_lang_model_df <- boys_df_cleaned %>%
-  filter(!is.na(lang_perco))
-
-boy_HGHQULR4_model_df <- boys_df_cleaned %>%
-  filter(!is.na(HGHQULR4))
-
-# --- Outcome-specific data frames for boys
+# -----------------------
+# Outcome-specific data frames (already created earlier)
+# -----------------------
 boy_outcome_dfs <- list(
   engl_perco  = boy_eng_model_df,
   maths_perco = boy_math_model_df,
@@ -450,28 +588,125 @@ boy_outcome_dfs <- list(
   HGHQULR4    = boy_HGHQULR4_model_df
 )
 
-# --- 1. Original sample: has_brother
-run_models(boy_outcome_dfs, names(boy_outcome_dfs), predictors_hasbro)
-
-# --- 2. Original sample: brothers (<3 brothers)
-boy_outcome_dfs_bros <- lapply(boy_outcome_dfs, \(df) df %>% filter(brothers < 3))
-run_models(boy_outcome_dfs_bros, names(boy_outcome_dfs), predictors_bros)
-
-# --- 3. First-born boys: has_brother
 boy_firstborn_dfs <- lapply(boy_outcome_dfs, \(df) df %>% filter(birth_order == 1))
-run_models(boy_firstborn_dfs, names(boy_outcome_dfs), predictors_hasbro)
-
-# --- 4. First-born boys: brothers (<3 brothers)
-boy_firstborn_bros_dfs <- lapply(boy_outcome_dfs, \(df) df %>% filter(birth_order == 1, brothers < 3))
-run_models(boy_firstborn_bros_dfs, names(boy_outcome_dfs), predictors_bros)
-
-# --- 5. Later-born boys: has_brother
 boy_laterborn_dfs <- lapply(boy_outcome_dfs, \(df) df %>% filter(birth_order >= 2))
-run_models(boy_laterborn_dfs, names(boy_outcome_dfs), predictors_hasbro)
 
-# --- 6. Later-born boys: brothers (<3 brothers)
-boy_laterborn_bros_dfs <- lapply(boy_outcome_dfs, \(df) df %>% filter(birth_order >= 2, brothers < 3))
-run_models(boy_laterborn_bros_dfs, names(boy_outcome_dfs), predictors_bros)
+# -----------------------
+# Helper: run two specs for one outcome + subsample
+# -----------------------
+run_two_specs <- function(df, outcome, predictors1, predictors2) {
+  m1 <- lm(as.formula(paste(outcome, predictors1)), data = df)
+  m2 <- lm(as.formula(paste(outcome, predictors2)), data = df %>% filter(brothers < 3))
+  list(m1, m2)
+}
+
+# -----------------------
+# Table-making function
+# -----------------------
+make_outcome_table <- function(outcome, outcome_label, coef_keep = TRUE, portrait = TRUE) {
+  
+  full_mods   <- run_two_specs(boy_outcome_dfs[[outcome]], outcome, predictors_hasbro, predictors_bros)
+  first_mods  <- run_two_specs(boy_firstborn_dfs[[outcome]], outcome, predictors_hasbro, predictors_bros)
+  later_mods  <- run_two_specs(boy_laterborn_dfs[[outcome]], outcome, predictors_hasbro, predictors_bros)
+  
+  all_mods <- list(
+    "Full sample: Has brother"     = full_mods[[1]],
+    "Full sample: Brothers < 3"    = full_mods[[2]],
+    "First-born: Has brother"      = first_mods[[1]],
+    "First-born: Brothers < 3"     = first_mods[[2]],
+    "Later-born: Has brother"      = later_mods[[1]],
+    "Later-born: Brothers < 3"     = later_mods[[2]]
+  )
+  
+  var_labels <- c(
+    "has_brother" = "Has brother",
+    "brothers" = "Number of brothers",
+    "birth_order:has_brother" = "Birth order × Has brother",
+    "wi:has_brother" = "Wealth index × Has brother",
+    "birth_order:brothers" = "Birth order × Number of brothers",
+    "wi:brothers" = "Wealth index × Number of brothers"
+  )
+  
+  if (coef_keep) {
+    keep_vars <- names(var_labels)
+  } else {
+    keep_vars <- NULL
+  }
+  
+  ft <- msummary(
+    all_mods,
+    stars = c('*' = .1, '**' = .05, '***' = .01),
+    gof_omit = 'IC|Log|Adj|F',
+    coef_map = var_labels,
+    coef_omit = if (!coef_keep) NULL else paste0("^(?!", paste(keep_vars, collapse="|"), ").*$"),
+    output = "flextable"
+  ) |>
+    set_caption(paste0("OLS Regression Results — ", outcome_label))
+  
+  if (portrait) {
+    ft <- ft |> width(width = 1.0) |> fontsize(size = 10, part = "all")
+  }
+  
+  return(ft)
+}
+
+# -----------------------
+# MAIN TEXT TABLES
+# -----------------------
+tab_eng_main  <- make_outcome_table("engl_perco",  "English test score", TRUE, TRUE)
+tab_math_main <- make_outcome_table("maths_perco", "Mathematics test score", TRUE, TRUE)
+tab_lang_main <- make_outcome_table("lang_perco",  "Language test score", TRUE, TRUE)
+tab_edu_main  <- make_outcome_table("HGHQULR4",    "Highest educational attainment", TRUE, TRUE)
+
+# -----------------------
+# APPENDIX TABLES
+# -----------------------
+tab_eng_app  <- make_outcome_table("engl_perco",  "English test score", FALSE, FALSE)
+tab_math_app <- make_outcome_table("maths_perco", "Mathematics test score", FALSE, FALSE)
+tab_lang_app <- make_outcome_table("lang_perco",  "Language test score", FALSE, FALSE)
+tab_edu_app  <- make_outcome_table("HGHQULR4",    "Highest educational attainment", FALSE, FALSE)
+
+# -----------------------
+# EXPORT TO WORD
+# -----------------------
+doc <- read_docx()
+
+# Portrait section (main text)
+doc <- body_add_par(doc, "Main Text Tables (Portrait)", style = "heading 1")
+doc <- body_add_flextable(doc, tab_eng_main)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_math_main)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_lang_main)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_edu_main)
+
+# Switch to landscape for appendix
+# Switch to landscape for appendix
+landscape_section <- officer::prop_section(
+  page_size = officer::page_size(orient = "landscape"),
+  page_margins = officer:::page_mar(
+    top = 1440, bottom = 1440, left = 1440, right = 1440,
+    header = 720, footer = 720, gutter = 0
+  )
+)
+
+# End portrait section and start landscape
+doc <- body_end_section(doc, landscape_section)
+
+
+# Appendix tables
+doc <- body_add_par(doc, "Appendix Tables (Full Results, Landscape)", style = "heading 1")
+doc <- body_add_flextable(doc, tab_eng_app)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_math_app)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_lang_app)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_edu_app)
+
+# Save Word file
+print(doc, target = "boys_regression_APA.docx")
 
 ```
 
@@ -519,18 +754,130 @@ predictors_hassis <- "~ has_sister + wi + sv + hhsize + mother_edu + father_edu 
                       chldeth + typesite + birth_order +
                       birth_order * has_sister + wi * has_sister"
 
-# --- Run the same subsets and models
-## 1. Original sample
-run_models(sis_outcome_dfs, names(sis_outcome_dfs), predictors_hassis)
+library(dplyr)
+library(modelsummary)
+library(flextable)
+library(officer)
 
-## 2. First-born girls
 sis_firstborn_dfs <- lapply(sis_outcome_dfs, \(df) df %>% filter(birth_order == 1))
-run_models(sis_firstborn_dfs, names(sis_outcome_dfs), predictors_hassis)
-
-## 3. Later-born girls
 sis_laterborn_dfs <- lapply(sis_outcome_dfs, \(df) df %>% filter(birth_order >= 2))
-run_models(sis_laterborn_dfs, names(sis_outcome_dfs), predictors_hassis)
 
+# -----------------------
+# Helper to run model for each subsample
+# -----------------------
+run_one_spec <- function(df, outcome, predictors) {
+  lm(as.formula(paste(outcome, predictors)), data = df)
+}
+
+# -----------------------
+# Function to make table
+# -----------------------
+make_sis_outcome_table <- function(outcome, outcome_label, coef_keep = TRUE, portrait = TRUE) {
+  
+  full_mod   <- run_one_spec(sis_outcome_dfs[[outcome]], outcome, predictors_hassis)
+  first_mod  <- run_one_spec(sis_firstborn_dfs[[outcome]], outcome, predictors_hassis)
+  later_mod  <- run_one_spec(sis_laterborn_dfs[[outcome]], outcome, predictors_hassis)
+  
+  all_mods <- list(
+    "Full sample"    = full_mod,
+    "First-born"     = first_mod,
+    "Later-born"     = later_mod
+  )
+  
+  var_labels <- c(
+    "has_sister" = "Has sister",
+    "birth_order:has_sister" = "Birth order × Has sister",
+    "wi:has_sister" = "Wealth index × Has sister"
+  )
+  
+  if (coef_keep) {
+    keep_vars <- names(var_labels)
+  } else {
+    keep_vars <- NULL
+  }
+  
+  ft <- msummary(
+    all_mods,
+    stars = c('*' = .1, '**' = .05, '***' = .01),
+    gof_omit = 'IC|Log|Adj|F',
+    coef_map = var_labels,
+    coef_omit = if (!coef_keep) NULL else paste0("^(?!", paste(keep_vars, collapse="|"), ").*$"),
+    output = "flextable"
+  ) |>
+    set_caption(paste0("OLS Regression Results — ", outcome_label))
+  
+  if (portrait) {
+    ft <- ft |> width(width = 1.0) |> fontsize(size = 10, part = "all")
+  }
+  
+  return(ft)
+}
+
+# -----------------------
+# MAIN TEXT TABLES
+# -----------------------
+tab_eng_main_sis  <- make_sis_outcome_table("engl_perco",  "English test score", TRUE, TRUE)
+tab_math_main_sis <- make_sis_outcome_table("maths_perco", "Mathematics test score", TRUE, TRUE)
+tab_lang_main_sis <- make_sis_outcome_table("lang_perco",  "Language test score", TRUE, TRUE)
+tab_edu_main_sis  <- make_sis_outcome_table("HGHQULR4",    "Highest educational attainment", TRUE, TRUE)
+
+# -----------------------
+# APPENDIX TABLES
+# -----------------------
+tab_eng_app_sis  <- make_sis_outcome_table("engl_perco",  "English test score", FALSE, FALSE)
+tab_math_app_sis <- make_sis_outcome_table("maths_perco", "Mathematics test score", FALSE, FALSE)
+tab_lang_app_sis <- make_sis_outcome_table("lang_perco",  "Language test score", FALSE, FALSE)
+tab_edu_app_sis  <- make_sis_outcome_table("HGHQULR4",    "Highest educational attainment", FALSE, FALSE)
+
+# -----------------------
+# EXPORT TO WORD
+# -----------------------
+doc <- read_docx()
+
+# ---- Main Text Tables (portrait) ----
+doc <- body_add_par(doc, "Main Text Tables — Has Sister (Portrait)", style = "heading 1")
+doc <- body_add_flextable(doc, tab_eng_main_sis)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_math_main_sis)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_lang_main_sis)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_edu_main_sis)
+
+# ---- Switch to Landscape for Appendix ----
+landscape_props <- officer::prop_section(
+  page_size = officer::page_size(orient = "landscape"),
+  page_margins = officer:::page_mar(
+    top = 1440, bottom = 1440, left = 1440, right = 1440,
+    header = 720, footer = 720, gutter = 0
+  )
+)
+doc <- officer::body_add(doc, officer::block_section(landscape_props))
+
+# ---- Appendix Tables (landscape) ----
+doc <- body_add_par(doc, "Appendix Tables — Has Sister (Full Results, Landscape)", style = "heading 1")
+doc <- body_add_flextable(doc, tab_eng_app_sis)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_math_app_sis)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_lang_app_sis)
+doc <- body_add_par(doc, "")
+doc <- body_add_flextable(doc, tab_edu_app_sis)
+
+# (Optional) switch back to portrait after appendix
+portrait_props <- officer::prop_section(
+  page_size = officer::page_size(orient = "portrait"),
+  page_margins = officer:::page_mar(
+    top = 1440, bottom = 1440, left = 1440, right = 1440,
+    header = 720, footer = 720, gutter = 0
+  )
+)
+doc <- officer::body_add(doc, officer::block_section(portrait_props))
+
+# Save Word document
+print(doc, target = "girls_regression_APA.docx")
+
+getAnywhere(block_section)
 
 
 ```
@@ -553,7 +900,132 @@ ctable <- coef(summary(ordered_model))
 p_values <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
 (ctable <- cbind(ctable, "p value" = p_values))
 
+library(broom)
+library(dplyr)
+library(officer)
+library(flextable)
+
+# Tidy model output
+# Tidy model output
+model_tidy <- broom::tidy(ordered_model) %>%
+  mutate(
+    p.value = 2 * pnorm(abs(statistic), lower.tail = FALSE),   # calculate p-values
+    OR = exp(estimate),                                        # odds ratio
+    # Round numeric columns to 2 decimal places
+    estimate = round(estimate, 2),
+    std.error = round(std.error, 2),
+    statistic = round(statistic, 2),
+    OR = round(OR, 2),
+    # APA style p-value formatting
+    p.value.formatted = ifelse(p.value < .001, "< .001", 
+                               paste0("= ", sprintf("%.3f", p.value)))
+  )
 
 
+# Rename columns for APA style
+model_tidy <- model_tidy %>%
+  rename(
+    B = estimate,
+    SE = std.error,
+    t = statistic,
+    `Odds Ratio` = OR,
+    p = p.value.formatted
+  ) %>%
+  dplyr::select(term, B, SE, t, `Odds Ratio`, p)
+
+# Create flextable
+ft <- flextable(model_tidy) %>%
+  autofit() %>%
+  align(align = "center", part = "all") %>%
+  set_caption(caption = "Ordinal Logistic Regression Predicting HGHQULR4 (APA 7th)") %>%
+  theme_booktabs()
+
+# Export to Word
+doc <- read_docx() %>%
+  body_add_flextable(ft)
+
+print(doc, target = "ordinal_model_APA.docx")
+
+
+
+```
+
+```{r graphs}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# Prep data
+df <- girls_df_cleaned %>%
+  mutate(group = factor(ifelse(has_brother == 1, "Treatment", "Control"),
+                        levels = c("Control", "Treatment")))
+
+########################################
+# Figure A: Dot & whisker for test scores
+########################################
+# Long format for scores
+scores_long <- df %>%
+  select(group, maths_perco, engl_perco, lang_perco) %>%
+  pivot_longer(-group, names_to = "outcome", values_to = "value") %>%
+  mutate(outcome = recode(outcome,
+                          maths_perco = "Math (% correct)",
+                          engl_perco  = "English (% correct)",
+                          lang_perco  = "Language (% correct)"))
+
+# Summarise means + CI
+scores_summ <- scores_long %>%
+  group_by(outcome, group) %>%
+  summarise(
+    mean = mean(value, na.rm = TRUE),
+    se   = sd(value, na.rm = TRUE) / sqrt(sum(!is.na(value))),
+    .groups = "drop"
+  ) %>%
+  mutate(lwr = mean - 1.96 * se,
+         upr = mean + 1.96 * se)
+
+# Plot
+figA <- ggplot(scores_summ, aes(x = mean, y = outcome, shape = group)) +
+  geom_point(size = 2.5, colour = "black", position = position_dodge(width = 0.6)) +
+  geom_errorbarh(aes(xmin = lwr, xmax = upr), height = 0.2, colour = "black",
+                 position = position_dodge(width = 0.6)) +
+  scale_shape_manual(values = c(16, 1)) +
+  labs(x = "Mean score ± 95% CI", y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank(),
+        legend.title = element_blank())
+
+########################################
+# Figure B: Proportional bar plot for education
+########################################
+# Factor with labels
+edu_labels <- c(
+  "0" = "None", "1" = "Primary", "2" = "Upper primary",
+  "3" = "Class 10", "4" = "Class 12", "5" = "ITI",
+  "6" = "Diploma", "8" = "Other"
+)
+
+edu_long <- df %>%
+  filter(!is.na(HGHQULR4)) %>%
+  mutate(edu_cat = factor(HGHQULR4, levels = names(edu_labels), labels = edu_labels)) %>%
+  group_by(group, edu_cat) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(group) %>%
+  mutate(prop = n / sum(n))
+
+# Plot
+figB <- ggplot(edu_long, aes(x = group, y = prop, fill = edu_cat)) +
+  geom_bar(stat = "identity", position = "fill", colour = "black", width = 0.6) +
+  scale_fill_grey(start = 0.9, end = 0.2, name = "Education") +
+  scale_y_continuous(labels = scales::percent) +
+  labs (x = NULL, y = "Percentage") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid.minor = element_blank(),
+        legend.position = "right")
+
+########################################
+# Save
+########################################
+ggsave("FigureA_scores_dotwhisker.png", figA, width = 6, height = 3.5, dpi = 300)
+ggsave("FigureB_education_proportions.png", figB, width = 6, height = 4.5, dpi = 300)
 
 ```
